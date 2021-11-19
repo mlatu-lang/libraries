@@ -20,6 +20,15 @@ impl Term {
     pub fn make_quote(terms: impl Into<Terms>) -> Self {
         Self::Quote(terms.into())
     }
+
+    #[must_use]
+    pub fn is_word(&self, name: &str) -> bool {
+        if let Self::Word(s) = self {
+            s == name
+        } else {
+            false
+        }
+    }
 }
 
 /// A mlatu redex, the left side of a rule

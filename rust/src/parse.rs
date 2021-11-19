@@ -1,12 +1,25 @@
 use crate::ast::{Rule, Rules, Term, Terms};
 use combine::parser::char::char;
 use combine::parser::choice::or;
-use combine::{eof, many1, parser, satisfy, sep_end_by, skip_many, EasyParser, Parser, Stream};
+use combine::{
+    between, eof, many1, parser, satisfy, sep_end_by, skip_many, skip_many1, EasyParser, Parser,
+    Stream,
+};
 use unic_ucd_category::GeneralCategory;
 
 const RESERVED: &[char] = &['(', ')', ';', '='];
 
-fn word_parser<Input>() -> impl Parser<Input, Output = String>
+fn separator_parser<Input>() -> impl Parser<Input, Output = char>
+where
+    Input: Stream<Token = char>,
+{
+    satisfy(|c| {
+        let cat = GeneralCategory::of(c);
+        cat.is_separator() || c == '\n' || c == '\r'
+    })
+}
+
+fn word_parser<Input>() -> impl Parser<Input, Output = Term>
 where
     Input: Stream<Token = char>,
 {
@@ -22,34 +35,27 @@ where
                 || cat.is_punctuation()
         }
     }))
+    .map(Term::make_word)
 }
 
-fn separator_parser<Input>() -> impl Parser<Input, Output = ()>
+fn quote_parser<Input>() -> impl Parser<Input, Output = Term>
 where
     Input: Stream<Token = char>,
 {
-    skip_many(satisfy(|c| {
-        let cat = GeneralCategory::of(c);
-        cat.is_separator() || c == '\n' || c == '\r'
-    }))
+    between(char('('), char(')'), terms_parser()).map(Term::make_quote)
 }
 
 fn term_parser<Input>() -> impl Parser<Input, Output = Term>
 where
     Input: Stream<Token = char>,
 {
-    // let word = many1::<String, _, _>(satisfy(|c| !needs_escaping(c))).map(Term::make_word);
-    let quote = char('(')
-        .with(terms_parser())
-        .skip(char(')'))
-        .map(Term::make_quote);
-    or(word_parser().map(Term::make_word), quote)
+    or(word_parser(), quote_parser())
 }
 
 parser! {
     fn terms_parser[Input]()(Input) -> Terms
     where [Input: Stream<Token = char>] {
-        separator_parser().with(sep_end_by::<Vec<_>, _, _, _>(term_parser(), separator_parser()))
+         skip_many(separator_parser()).with(sep_end_by::<Vec<_>, _, _, _>(term_parser(), skip_many1(separator_parser())))
     }
 }
 
@@ -67,7 +73,7 @@ where
 parser! {
     fn rules_parser[Input]()(Input) -> Rules
     where [Input: Stream<Token = char>] {
-        separator_parser().with(sep_end_by::<Vec<_>, _, _, _>(rule_parser(), separator_parser()))
+        skip_many(separator_parser()).with(sep_end_by::<Vec<_>, _, _, _>(rule_parser(), skip_many1(separator_parser())))
     }
 }
 
@@ -77,8 +83,7 @@ parser! {
 ///
 /// Returns an `Err` if the string was not a valid term
 pub fn term(input: &str) -> Result<Term, String> {
-    let mut parser = term_parser().skip(eof());
-    match parser.easy_parse(input) {
+    match term_parser().skip(eof()).easy_parse(input) {
         Ok((result, _)) => Ok(result),
         Err(e) => Err(format!(
             "{}",
@@ -93,8 +98,7 @@ pub fn term(input: &str) -> Result<Term, String> {
 ///
 /// Returns an `Err` if the string was not a valid sequence of terms
 pub fn terms(input: &str) -> Result<Terms, String> {
-    let mut parser = terms_parser().skip(eof());
-    match parser.easy_parse(input) {
+    match terms_parser().skip(eof()).easy_parse(input) {
         Ok((result, _)) => Ok(result),
         Err(e) => Err(format!(
             "{}",
@@ -109,8 +113,7 @@ pub fn terms(input: &str) -> Result<Terms, String> {
 ///
 /// Returns an `Err` if the string was not a valid rule
 pub fn rule(input: &str) -> Result<Rule, String> {
-    let mut parser = rule_parser().skip(eof());
-    match parser.easy_parse(input) {
+    match rule_parser().skip(eof()).easy_parse(input) {
         Ok((result, _)) => Ok(result),
         Err(e) => Err(format!(
             "{}",
@@ -120,13 +123,12 @@ pub fn rule(input: &str) -> Result<Rule, String> {
 }
 
 /// Parses a string into a sequence of rules or a string error
-/// 
+///
 /// # Errors
 ///
 /// Returns an `Err` if the string was not a valid sequence of rules
 pub fn rules(input: &str) -> Result<Rules, String> {
-    let mut parser = rules_parser().skip(eof());
-    match parser.easy_parse(input) {
+    match rules_parser().skip(eof()).easy_parse(input) {
         Ok((result, _)) => Ok(result),
         Err(e) => Err(format!(
             "{}",
