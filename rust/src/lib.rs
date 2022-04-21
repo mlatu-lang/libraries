@@ -61,65 +61,65 @@ pub fn rewrite(
             index = list.len() - 1;
             continue;
         }
-        if index > 0 && list[index].is_word(unwrap_spur) {
-            if let Term::Quote(a) = list[index - 1].clone() {
-                list.remove(index); // '<'
-                list.remove(index - 1); // quote;
-                for term in a.into_iter().rev() {
-                    list.insert(index - 1, term.clone());
+        if index == 0 {
+            return Vector::from(list);
+        }
+        if list[index - 1].is_quote() {
+            if list[index].is_word(unwrap_spur) {
+                if let Term::Quote(a) = list[index - 1].clone() {
+                    list.remove(index); // '<'
+                    list.remove(index - 1); // input quote;
+                    for term in a.into_iter().rev() {
+                        list.insert(index - 1, term.clone());
+                    }
+                    if list.is_empty() {
+                        return vector![];
+                    }
+                    index = list.len() - 1;
+                    continue;
                 }
+            }
+            if list[index].is_word(wrap_spur) {
+                list.remove(index); // '>'
+                list[index - 1] = Term::make_quote(arena, vector![list[index - 1].clone()]).clone(); // input quote
+                index = list.len() - 1;
+                continue;
+            }
+            if list[index].is_word(discard_spur) {
+                list.remove(index); // '-'
+                list.remove(index - 1); // term
                 if list.is_empty() {
                     return vector![];
                 }
                 index = list.len() - 1;
                 continue;
             }
-        }
-        if index > 0 && list[index].is_word(wrap_spur) && list[index - 1].is_quote() {
-            list.remove(index); // 'wrap'
-            list[index - 1] = Term::make_quote(arena, vector![list[index - 1].clone()]).clone();
-            index = list.len() - 1;
-            continue;
-        }
-        if index > 1 && list[index].is_word(combine_spur) {
-            if let Term::Quote(a) = list[index - 1].clone() {
-                if let Term::Quote(b) = list[index - 2].clone() {
-                    let mut new_quote = b.clone();
-                    new_quote.extend(a);
-                    list.remove(index); // ','
-                    list.remove(index - 1); // a
-                    list[index - 2] = Term::make_quote(arena, new_quote).clone();
+            if list[index].is_word(copy_spur) {
+                list[index] = list[index - 1].clone();
+                index = list.len() - 1;
+                continue;
+            }
+            if index > 1 && list[index - 2].is_quote() {
+                if list[index].is_word(combine_spur) {
+                    if let Term::Quote(a) = list[index - 1].clone() {
+                        if let Term::Quote(b) = list[index - 2].clone() {
+                            let mut new_quote = b.clone();
+                            new_quote.extend(a);
+                            list.remove(index); // ','
+                            list.remove(index - 1);
+                            list[index - 2] = Term::make_quote(arena, new_quote).clone();
+                            index = list.len() - 1;
+                            continue;
+                        }
+                    }
+                }
+                if list[index].is_word(swap_spur) {
+                    list.swap(index - 2, index - 1); // two input quotes
+                    list.remove(index); // '~'
                     index = list.len() - 1;
                     continue;
                 }
             }
-        }
-        if index > 1
-            && list[index].is_word(swap_spur)
-            && list[index - 1].is_quote()
-            && list[index - 2].is_quote()
-        {
-            list.swap(index - 2, index - 1);
-            list.remove(index); // '~'
-            index = list.len() - 1;
-            continue;
-        }
-        if index > 0 && list[index].is_word(discard_spur) && list[index - 1].is_quote() {
-            list.remove(index); // '-'
-            list.remove(index - 1); // term
-            if list.is_empty() {
-                return vector![];
-            }
-            index = list.len() - 1;
-            continue;
-        }
-        if index > 0 && list[index].is_word(copy_spur) && list[index - 1].is_quote() {
-            list[index] = list[index - 1].clone();
-            index = list.len() - 1;
-            continue;
-        }
-        if index == 0 {
-            return Vector::from(list);
         }
         index -= 1;
     }
