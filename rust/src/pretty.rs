@@ -29,7 +29,7 @@ pub fn terms<R: Resolver<Spur>>(rodeo: &R, terms: Vector<Term>) -> String {
 pub fn rule<R: Resolver<Spur>>(rodeo: &R, rule: Rule) -> String {
     let Rule { redex, reduction } = rule;
     format!(
-        "{} = {};",
+        "{} = {}.",
         terms(rodeo, redex),
         terms(rodeo, reduction).trim()
     )

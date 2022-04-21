@@ -17,7 +17,7 @@ quote = Quote <$> between (char '(') (char ')') terms <?> "quote"
 wordChar :: Parser Char
 wordChar = do
   c <- letterChar <|> numberChar <|> punctuationChar <|> symbolChar
-  if c == '(' || c == ')' || c == ';' || c == '='
+  if c == '(' || c == ')' || c == '.' || c == '='
     then failure Nothing Set.empty
     else pure c
 
@@ -36,7 +36,7 @@ rule =
       redex <- terms
       void $ char '='
       reduction <- terms
-      void $ char ';'
+      void $ char '.'
       pure $ Rule {redex, reduction}
   )
     <?> "rule"

@@ -13,7 +13,7 @@ prettyTerms [x] = prettyTerm x
 prettyTerms (x : xs) = prettyTerm x <> " " <> prettyTerms xs
 
 prettyRule :: Rule -> Text
-prettyRule (Rule {redex, reduction}) = prettyTerms redex <> " = " <> prettyTerms reduction <> ";"
+prettyRule (Rule {redex, reduction}) = prettyTerms redex <> " = " <> prettyTerms reduction <> "."
 
 prettyRules :: Rules -> Text
 prettyRules [] = ""

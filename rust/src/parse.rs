@@ -9,7 +9,7 @@ use typed_arena::Arena;
 enum Token {
     LeftParen,
     RightParen,
-    Semicolon,
+    Period,
     Equals,
     Word(String),
     EndOfInput,
@@ -44,11 +44,11 @@ impl<'iter> Tokens<'iter> {
                             vec![Token::Word(buf), Token::Equals]
                         }
                     }
-                    ';' => {
+                    '.' => {
                         return if buf.is_empty() {
-                            vec![Token::Semicolon]
+                            vec![Token::Period]
                         } else {
-                            vec![Token::Word(buf), Token::Semicolon]
+                            vec![Token::Word(buf), Token::Period]
                         }
                     }
                     '(' => {
@@ -129,7 +129,7 @@ fn display_token(token: &Token) -> String {
     match token {
         Token::LeftParen => "(".to_string(),
         Token::RightParen => ")".to_string(),
-        Token::Semicolon => ";".to_string(),
+        Token::Period => ".".to_string(),
         Token::Equals => "=".to_string(),
         Token::Word(s) => format!("word \"{}\"", s),
         Token::EndOfInput => "end of input".to_string(),
@@ -197,7 +197,7 @@ fn parse_rule(
             tokens.advance();
             let reduction = parse_terms(arena, rodeo, tokens).map_err(ParseError::Consumed)?;
             match tokens.next() {
-                Some(Token::Semicolon) => Ok(Rule { redex, reduction }),
+                Some(Token::Period) => Ok(Rule { redex, reduction }),
                 Some(token) => Err(ParseError::Consumed(format!(
                     "Expected ';' but found {}",
                     display_token(&token)
