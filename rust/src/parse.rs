@@ -1,9 +1,8 @@
-use crate::ast::{Rule, Term};
+use crate::ast::{Engine, Primitive, Rule, Term};
 use im::Vector;
 pub use lasso::ThreadedRodeo;
 use std::iter::{FusedIterator, Iterator};
 use std::str::Chars;
-use typed_arena::Arena;
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 enum Token {
@@ -11,6 +10,7 @@ enum Token {
     RightParen,
     Period,
     Equals,
+    Prim(Primitive),
     Word(String),
     EndOfInput,
 }
@@ -51,6 +51,48 @@ impl<'iter> Tokens<'iter> {
                             vec![Token::Word(buf), Token::Period]
                         }
                     }
+                    '~' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Swap)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Swap)]
+                        }
+                    }
+                    ',' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Combine)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Combine)]
+                        }
+                    }
+                    '+' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Copy)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Copy)]
+                        }
+                    }
+                    '-' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Discard)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Discard)]
+                        }
+                    }
+                    '>' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Wrap)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Wrap)]
+                        }
+                    }
+                    '<' => {
+                        return if buf.is_empty() {
+                            vec![Token::Prim(Primitive::Unwrap)]
+                        } else {
+                            vec![Token::Word(buf), Token::Prim(Primitive::Unwrap)]
+                        }
+                    }
                     '(' => {
                         return if buf.is_empty() {
                             vec![Token::LeftParen]
@@ -87,7 +129,7 @@ impl<'iter> Tokens<'iter> {
         self.peeked[0].clone()
     }
 
-    fn is_empty(&mut self) -> bool {
+    fn at_eoi(&mut self) -> bool {
         if self.peeked.is_empty() {
             let next_tokens = self.iter_next();
             self.peeked.extend(next_tokens);
@@ -129,6 +171,7 @@ fn display_token(token: &Token) -> String {
     match token {
         Token::LeftParen => "(".to_string(),
         Token::RightParen => ")".to_string(),
+        Token::Prim(primitive) => primitive.to_string(),
         Token::Period => ".".to_string(),
         Token::Equals => "=".to_string(),
         Token::Word(s) => format!("word \"{}\"", s),
@@ -136,25 +179,21 @@ fn display_token(token: &Token) -> String {
     }
 }
 
-fn parse_term<'a>(
-    arena: &'a Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    tokens: &mut Tokens,
-) -> Result<&'a mut Term, ParseError> {
+fn parse_term<'a>(engine: &'a Engine, tokens: &mut Tokens) -> Result<&'a mut Term, ParseError> {
     match tokens.peek() {
         Token::Word(s) => {
             tokens.advance();
-            let term = Term::make_word(arena, rodeo.get_or_intern(s));
-            Ok(term)
+            Ok(Term::make_word(engine, engine.get_or_intern(s)))
+        }
+        Token::Prim(primitive) => {
+            tokens.advance();
+            Ok(Term::make_prim(engine, primitive))
         }
         Token::LeftParen => {
             tokens.advance();
-            let terms = parse_terms(arena, rodeo, tokens).map_err(ParseError::Consumed)?;
+            let terms = parse_terms(engine, tokens).map_err(ParseError::Consumed)?;
             match tokens.next() {
-                Some(Token::RightParen) => {
-                    let term = Term::make_quote(arena, terms);
-                    Ok(term)
-                }
+                Some(Token::RightParen) => Ok(Term::make_quote(engine, terms)),
                 Some(token) => Err(ParseError::Consumed(format!(
                     "Expected ')' but found {}",
                     display_token(&token)
@@ -169,14 +208,10 @@ fn parse_term<'a>(
     }
 }
 
-fn parse_terms(
-    arena: &Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    tokens: &mut Tokens,
-) -> Result<Vector<Term>, String> {
+fn parse_terms(engine: &Engine, tokens: &mut Tokens) -> Result<Vector<Term>, String> {
     let mut terms = Vector::new();
     loop {
-        match parse_term(arena, rodeo, tokens) {
+        match parse_term(engine, tokens) {
             Ok(term) => terms.push_back(term.clone()),
             Err(ParseError::Consumed(err)) => return Err(err),
             Err(ParseError::DidNotConsume(_)) => break,
@@ -186,16 +221,12 @@ fn parse_terms(
     Ok(terms)
 }
 
-fn parse_rule(
-    arena: &Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    tokens: &mut Tokens,
-) -> Result<Rule, ParseError> {
-    let redex = parse_terms(arena, rodeo, tokens).map_err(ParseError::Consumed)?;
+fn parse_rule(engine: &Engine, tokens: &mut Tokens) -> Result<Rule, ParseError> {
+    let redex = parse_terms(engine, tokens).map_err(ParseError::Consumed)?;
     match tokens.peek() {
         Token::Equals => {
             tokens.advance();
-            let reduction = parse_terms(arena, rodeo, tokens).map_err(ParseError::Consumed)?;
+            let reduction = parse_terms(engine, tokens).map_err(ParseError::Consumed)?;
             match tokens.next() {
                 Some(Token::Period) => Ok(Rule { redex, reduction }),
                 Some(token) => Err(ParseError::Consumed(format!(
@@ -216,14 +247,10 @@ fn parse_rule(
     }
 }
 
-fn parse_rules(
-    arena: &Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    tokens: &mut Tokens,
-) -> Result<Vector<Rule>, ParseError> {
+fn parse_rules(engine: &Engine, tokens: &mut Tokens) -> Result<Vector<Rule>, ParseError> {
     let mut rules = Vector::new();
     loop {
-        match parse_rule(arena, rodeo, tokens) {
+        match parse_rule(engine, tokens) {
             Ok(rule) => {
                 rules.push_back(rule);
             }
@@ -239,15 +266,11 @@ fn parse_rules(
 /// # Errors
 ///
 /// Returns an `Err` if the string was not a valid term
-pub fn term<'a>(
-    arena: &'a Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    input: &str,
-) -> Result<&'a mut Term, String> {
+pub fn term<'a>(engine: &'a Engine, input: &str) -> Result<&'a mut Term, String> {
     let mut tokens = Tokens::new(input);
-    match parse_term(arena, rodeo, &mut tokens) {
+    match parse_term(engine, &mut tokens) {
         Ok(term) => {
-            if tokens.is_empty() {
+            if tokens.at_eoi() {
                 Ok(term)
             } else {
                 Err(format!(
@@ -265,15 +288,11 @@ pub fn term<'a>(
 /// # Errors
 ///
 /// Returns an `Err` if the string was not a valid sequence of terms
-pub fn terms(
-    arena: &Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    input: &str,
-) -> Result<Vector<Term>, String> {
+pub fn terms(engine: &Engine, input: &str) -> Result<Vector<Term>, String> {
     let mut tokens = Tokens::new(input);
-    match parse_terms(arena, rodeo, &mut tokens) {
+    match parse_terms(engine, &mut tokens) {
         Ok(terms) => {
-            if tokens.is_empty() {
+            if tokens.at_eoi() {
                 Ok(terms)
             } else {
                 Err(format!(
@@ -291,11 +310,11 @@ pub fn terms(
 /// # Errors
 ///
 /// Returns an `Err` if the string was not a valid rule
-pub fn rule(arena: &Arena<Term>, rodeo: &ThreadedRodeo, input: &str) -> Result<Rule, String> {
+pub fn rule(engine: &Engine, input: &str) -> Result<Rule, String> {
     let mut tokens = Tokens::new(input);
-    match parse_rule(arena, rodeo, &mut tokens) {
+    match parse_rule(engine, &mut tokens) {
         Ok(rule) => {
-            if tokens.is_empty() {
+            if tokens.at_eoi() {
                 Ok(rule)
             } else {
                 Err(format!(
@@ -313,15 +332,11 @@ pub fn rule(arena: &Arena<Term>, rodeo: &ThreadedRodeo, input: &str) -> Result<R
 /// # Errors
 ///
 /// Returns an `Err` if the string was not a valid sequence of rules
-pub fn rules(
-    arena: &Arena<Term>,
-    rodeo: &ThreadedRodeo,
-    input: &str,
-) -> Result<Vector<Rule>, String> {
+pub fn rules(engine: &Engine, input: &str) -> Result<Vector<Rule>, String> {
     let mut tokens = Tokens::new(input);
-    match parse_rules(arena, rodeo, &mut tokens) {
+    match parse_rules(engine, &mut tokens) {
         Ok(rules) => {
-            if tokens.is_empty() {
+            if tokens.at_eoi() {
                 Ok(rules)
             } else {
                 Err(format!(

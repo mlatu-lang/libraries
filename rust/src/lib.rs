@@ -1,4 +1,4 @@
-#![deny(clippy::all, clippy::pedantic, clippy::cargo, clippy::nursery)]
+#![deny(clippy::all, clippy::pedantic, clippy::cargo, clippy::nursery, clippy::cargo)]
 
 mod ast;
 pub mod parse;
@@ -6,9 +6,6 @@ pub mod pretty;
 
 pub use crate::ast::*;
 use im::{vector, Vector};
-
-pub type Arena = typed_arena::Arena<Term>;
-pub type Rodeo = lasso::ThreadedRodeo;
 
 fn matches(redex: &Vector<Term>, list: &[Term], start: usize) -> bool {
     if (redex.len() - 1) > start {
@@ -25,18 +22,7 @@ fn matches(redex: &Vector<Term>, list: &[Term], start: usize) -> bool {
 /// Rewrites a given sequence of terms with the given rules into a new sequence of rules
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn rewrite(
-    arena: &Arena,
-    rodeo: &Rodeo,
-    rules: &Vector<Rule>,
-    original: Vector<Term>,
-) -> Vector<Term> {
-    let copy_spur = rodeo.get_or_intern("+");
-    let discard_spur = rodeo.get_or_intern("-");
-    let swap_spur = rodeo.get_or_intern("~");
-    let combine_spur = rodeo.get_or_intern(",");
-    let unwrap_spur = rodeo.get_or_intern("<");
-    let wrap_spur = rodeo.get_or_intern(">");
+pub fn rewrite(engine: &Engine, rules: &Vector<Rule>, original: Vector<Term>) -> Vector<Term> {
     let mut list: Vec<_> = original.into_iter().collect();
     let mut index = list.len() - 1;
     loop {
@@ -61,11 +47,8 @@ pub fn rewrite(
             index = list.len() - 1;
             continue;
         }
-        if index == 0 {
-            return Vector::from(list);
-        }
-        if list[index - 1].is_quote() {
-            if list[index].is_word(unwrap_spur) {
+        match list.get(index) {
+            Some(Term::Prim(Primitive::Unwrap)) if index > 0 => {
                 if let Term::Quote(a) = list[index - 1].clone() {
                     list.remove(index); // '<'
                     list.remove(index - 1); // input quote;
@@ -79,47 +62,58 @@ pub fn rewrite(
                     continue;
                 }
             }
-            if list[index].is_word(wrap_spur) {
-                list.remove(index); // '>'
-                list[index - 1] = Term::make_quote(arena, vector![list[index - 1].clone()]).clone(); // input quote
-                index = list.len() - 1;
-                continue;
-            }
-            if list[index].is_word(discard_spur) {
-                list.remove(index); // '-'
-                list.remove(index - 1); // term
-                if list.is_empty() {
-                    return vector![];
+            Some(Term::Prim(Primitive::Wrap)) if index > 0 => {
+                if list[index - 1].is_quote() {
+                    list.remove(index); // '>'
+                    list[index - 1] =
+                        Term::make_quote(engine, vector![list[index - 1].clone()]).clone(); // input quote
+                    index = list.len() - 1;
+                    continue;
                 }
-                index = list.len() - 1;
-                continue;
             }
-            if list[index].is_word(copy_spur) {
-                list[index] = list[index - 1].clone();
-                index = list.len() - 1;
-                continue;
+            Some(Term::Prim(Primitive::Discard)) if index > 0 => {
+                if list[index - 1].is_quote() {
+                    list.remove(index); // '-'
+                    list.remove(index - 1); // term
+                    if list.is_empty() {
+                        return vector![];
+                    }
+                    index = list.len() - 1;
+                    continue;
+                }
             }
-            if index > 1 && list[index - 2].is_quote() {
-                if list[index].is_word(combine_spur) {
-                    if let Term::Quote(a) = list[index - 1].clone() {
-                        if let Term::Quote(b) = list[index - 2].clone() {
-                            let mut new_quote = b.clone();
-                            new_quote.extend(a);
-                            list.remove(index); // ','
-                            list.remove(index - 1);
-                            list[index - 2] = Term::make_quote(arena, new_quote).clone();
-                            index = list.len() - 1;
-                            continue;
-                        }
+            Some(Term::Prim(Primitive::Copy)) if index > 0 => {
+                if list[index - 1].is_quote() {
+                    list[index] = list[index - 1].clone();
+                    index = list.len() - 1;
+                    continue;
+                }
+            }
+            Some(Term::Prim(Primitive::Combine)) if index > 1 => {
+                if let Term::Quote(a) = list[index - 1].clone() {
+                    if let Term::Quote(b) = list[index - 2].clone() {
+                        let mut new_quote = b.clone();
+                        new_quote.extend(a);
+                        list.remove(index); // ','
+                        list.remove(index - 1);
+                        list[index - 2] = Term::make_quote(engine, new_quote).clone();
+                        index = list.len() - 1;
+                        continue;
                     }
                 }
-                if list[index].is_word(swap_spur) {
+            }
+            Some(Term::Prim(Primitive::Swap)) if index > 1 => {
+                if list[index - 1].is_quote() && list[index - 2].is_quote() {
                     list.swap(index - 2, index - 1); // two input quotes
                     list.remove(index); // '~'
                     index = list.len() - 1;
                     continue;
                 }
             }
+            _ => {}
+        }
+        if index == 0 {
+            return Vector::from(list);
         }
         index -= 1;
     }
@@ -130,117 +124,105 @@ mod tests {
     use super::*;
     use im::vector;
 
-    fn rewrites_to(arena: &Arena, rodeo: &Rodeo, rules: Vector<Rule>, begin: &str, end: &str) {
-        let begin_terms = parse::terms(arena, rodeo, begin).unwrap();
-        let rewritten = rewrite(arena, rodeo, &rules, begin_terms);
-        assert_eq!(pretty::terms(&rodeo, rewritten), end.to_owned());
+    fn rewrites_to(engine: &Engine, rules: Vector<Rule>, begin: &str, end: &str) {
+        let begin_terms = parse::terms(engine, begin).unwrap();
+        let rewritten = rewrite(engine, &rules, begin_terms);
+        assert_eq!(pretty::terms(engine, rewritten), end.to_owned());
     }
 
     #[test]
     fn copy_test() {
-        let arena = Arena::new();
-        let rodeo = Rodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "(x) +", "(x) (x)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) + (y)", "(x) (x) (y)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) +", "(x) (y) (y)");
-        rewrites_to(
-            &arena,
-            &rodeo,
-            vector![],
-            "(x) (y) + (z)",
-            "(x) (y) (y) (z)",
-        );
-        rewrites_to(&arena, &rodeo, vector![], "+", "+");
-        rewrites_to(&arena, &rodeo, vector![], "x +", "x +");
+        rewrites_to(&engine, vector![], "(x) +", "(x) (x)");
+        rewrites_to(&engine, vector![], "(x) + (y)", "(x) (x) (y)");
+        rewrites_to(&engine, vector![], "(x) (y) +", "(x) (y) (y)");
+        rewrites_to(&engine, vector![], "(x) (y) + (z)", "(x) (y) (y) (z)");
+        rewrites_to(&engine, vector![], "+", "+");
+        rewrites_to(&engine, vector![], "x +", "x +");
     }
 
     #[test]
     fn swap_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) ~", "(y) (x)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (z) (y) ~", "(x) (y) (z)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) ~ (z)", "(y) (x) (z)");
+        rewrites_to(&engine, vector![], "(x) (y) ~", "(y) (x)");
+        rewrites_to(&engine, vector![], "(x) (z) (y) ~", "(x) (y) (z)");
+        rewrites_to(&engine, vector![], "(x) (y) ~ (z)", "(y) (x) (z)");
 
-        rewrites_to(&arena, &rodeo, vector![], "~", "~");
-        rewrites_to(&arena, &rodeo, vector![], "x ~", "x ~");
-        rewrites_to(&arena, &rodeo, vector![], "x y ~", "x y ~");
-        rewrites_to(&arena, &rodeo, vector![], "(x) ~", "(x) ~");
+        rewrites_to(&engine, vector![], "~", "~");
+        rewrites_to(&engine, vector![], "x ~", "x ~");
+        rewrites_to(&engine, vector![], "x y ~", "x y ~");
+        rewrites_to(&engine, vector![], "(x) ~", "(x) ~");
     }
 
     #[test]
     fn discard_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "(x) -", "");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) -", "(x)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) - (z)", "(x) (z)");
+        rewrites_to(&engine, vector![], "(x) -", "");
+        rewrites_to(&engine, vector![], "(x) (y) -", "(x)");
+        rewrites_to(&engine, vector![], "(x) (y) - (z)", "(x) (z)");
 
-        rewrites_to(&arena, &rodeo, vector![], "-", "-");
-        rewrites_to(&arena, &rodeo, vector![], "x -", "x -");
+        rewrites_to(&engine, vector![], "-", "-");
+        rewrites_to(&engine, vector![], "x -", "x -");
     }
 
     #[test]
     fn wrap_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "(x) >", "((x))");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) >", "(x) ((y))");
-        rewrites_to(&arena, &rodeo, vector![], "(x) > (y)", "((x)) (y)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) > (z)", "(x) ((y)) (z)");
+        rewrites_to(&engine, vector![], "(x) >", "((x))");
+        rewrites_to(&engine, vector![], "(x) (y) >", "(x) ((y))");
+        rewrites_to(&engine, vector![], "(x) > (y)", "((x)) (y)");
+        rewrites_to(&engine, vector![], "(x) (y) > (z)", "(x) ((y)) (z)");
 
-        rewrites_to(&arena, &rodeo, vector![], ">", ">");
-        rewrites_to(&arena, &rodeo, vector![], "x >", "x >");
+        rewrites_to(&engine, vector![], ">", ">");
+        rewrites_to(&engine, vector![], "x >", "x >");
     }
 
     #[test]
     fn unwrap_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "() <", "");
-        rewrites_to(&arena, &rodeo, vector![], "(x) () <", "(x)");
-        rewrites_to(&arena, &rodeo, vector![], "() < (y)", "(y)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) () < (y)", "(x) (y)");
-        rewrites_to(&arena, &rodeo, vector![], "(y) <", "y");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) <", "(x) y");
-        rewrites_to(&arena, &rodeo, vector![], "(x) < (y)", "x (y)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) < (z)", "(x) y (z)");
-        rewrites_to(&arena, &rodeo, vector![], "(x y z) <", "x y z");
+        rewrites_to(&engine, vector![], "() <", "");
+        rewrites_to(&engine, vector![], "(x) () <", "(x)");
+        rewrites_to(&engine, vector![], "() < (y)", "(y)");
+        rewrites_to(&engine, vector![], "(x) () < (y)", "(x) (y)");
+        rewrites_to(&engine, vector![], "(y) <", "y");
+        rewrites_to(&engine, vector![], "(x) (y) <", "(x) y");
+        rewrites_to(&engine, vector![], "(x) < (y)", "x (y)");
+        rewrites_to(&engine, vector![], "(x) (y) < (z)", "(x) y (z)");
+        rewrites_to(&engine, vector![], "(x y z) <", "x y z");
 
-        rewrites_to(&arena, &rodeo, vector![], "<", "<");
-        rewrites_to(&arena, &rodeo, vector![], "x <", "x <");
+        rewrites_to(&engine, vector![], "<", "<");
+        rewrites_to(&engine, vector![], "x <", "x <");
     }
 
     #[test]
     fn combine_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
+        let engine = Engine::new();
 
-        rewrites_to(&arena, &rodeo, vector![], "() () ,", "()");
-        rewrites_to(&arena, &rodeo, vector![], "(x) () ,", "(x)");
-        rewrites_to(&arena, &rodeo, vector![], "() (y) ,", "(y)");
-        rewrites_to(&arena, &rodeo, vector![], "(x) (y) ,", "(x y)");
+        rewrites_to(&engine, vector![], "() () ,", "()");
+        rewrites_to(&engine, vector![], "(x) () ,", "(x)");
+        rewrites_to(&engine, vector![], "() (y) ,", "(y)");
+        rewrites_to(&engine, vector![], "(x) (y) ,", "(x y)");
 
-        rewrites_to(&arena, &rodeo, vector![], ",", ",");
-        rewrites_to(&arena, &rodeo, vector![], "(x) ,", "(x) ,");
-        rewrites_to(&arena, &rodeo, vector![], "x ,", "x ,");
-        rewrites_to(&arena, &rodeo, vector![], "x y ,", "x y ,");
+        rewrites_to(&engine, vector![], ",", ",");
+        rewrites_to(&engine, vector![], "(x) ,", "(x) ,");
+        rewrites_to(&engine, vector![], "x ,", "x ,");
+        rewrites_to(&engine, vector![], "x y ,", "x y ,");
     }
 
     #[test]
     fn user_defined_test() {
-        let arena = Arena::new();
-        let rodeo = ThreadedRodeo::new();
-        let rules = parse::rules(&arena, &rodeo, "x = y z ; x x = aaaaaaaaa ;").unwrap();
-        rewrites_to(&arena, &rodeo, rules.clone(), "x", "y z");
-        rewrites_to(&arena, &rodeo, rules.clone(), "a x", "a y z");
-        rewrites_to(&arena, &rodeo, rules.clone(), "x a", "y z a");
-        rewrites_to(&arena, &rodeo, rules.clone(), "a x b", "a y z b");
-        rewrites_to(&arena, &rodeo, rules.clone(), "x x", "aaaaaaaaa");
+        let engine = Engine::new();
+        let rules = parse::rules(&engine, "x = y z. x x = aaaaaaaaa.").unwrap();
+
+        rewrites_to(&engine, rules.clone(), "x", "y z");
+        rewrites_to(&engine, rules.clone(), "a x", "a y z");
+        rewrites_to(&engine, rules.clone(), "x a", "y z a");
+        rewrites_to(&engine, rules.clone(), "a x b", "a y z b");
+        rewrites_to(&engine, rules.clone(), "x x", "aaaaaaaaa");
     }
 }
