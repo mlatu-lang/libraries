@@ -208,6 +208,26 @@ fn parse_term<'a>(engine: &'a Engine, tokens: &mut Tokens) -> Result<&'a mut Ter
     }
 }
 
+fn parse_nonquote_term<'a>(
+    engine: &'a Engine,
+    tokens: &mut Tokens,
+) -> Result<&'a mut Term, ParseError> {
+    match tokens.peek() {
+        Token::Word(s) => {
+            tokens.advance();
+            Ok(Term::make_word(engine, engine.get_or_intern(s)))
+        }
+        Token::Prim(primitive) => {
+            tokens.advance();
+            Ok(Term::make_prim(engine, primitive))
+        }
+        token => Err(ParseError::DidNotConsume(format!(
+            "Expected non-quote term but found {}",
+            display_token(&token)
+        ))),
+    }
+}
+
 fn parse_terms(engine: &Engine, tokens: &mut Tokens) -> Result<Vector<Term>, String> {
     let mut terms = Vector::new();
     loop {
@@ -221,8 +241,21 @@ fn parse_terms(engine: &Engine, tokens: &mut Tokens) -> Result<Vector<Term>, Str
     Ok(terms)
 }
 
+fn parse_nonquote_terms(engine: &Engine, tokens: &mut Tokens) -> Result<Vector<Term>, String> {
+    let mut terms = Vector::new();
+    loop {
+        match parse_nonquote_term(engine, tokens) {
+            Ok(term) => terms.push_back(term.clone()),
+            Err(ParseError::Consumed(err)) => return Err(err),
+            Err(ParseError::DidNotConsume(_)) => break,
+        }
+    }
+
+    Ok(terms)
+}
+
 fn parse_rule(engine: &Engine, tokens: &mut Tokens) -> Result<Rule, ParseError> {
-    let redex = parse_terms(engine, tokens).map_err(ParseError::Consumed)?;
+    let redex = parse_nonquote_terms(engine, tokens).map_err(ParseError::Consumed)?;
     match tokens.peek() {
         Token::Equals => {
             tokens.advance();
