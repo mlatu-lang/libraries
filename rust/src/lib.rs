@@ -1,4 +1,10 @@
-#![deny(clippy::all, clippy::pedantic, clippy::cargo, clippy::nursery, clippy::cargo)]
+#![deny(
+    clippy::all,
+    clippy::pedantic,
+    clippy::cargo,
+    clippy::nursery,
+    clippy::cargo
+)]
 
 mod ast;
 pub mod parse;
@@ -7,116 +13,92 @@ pub mod pretty;
 pub use crate::ast::*;
 use im::{vector, Vector};
 
-fn matches(redex: &Vector<Term>, list: &[Term], start: usize) -> bool {
-    if (redex.len() - 1) > start {
-        return false;
-    }
-    for i in 0..redex.len() {
-        if list[(start - (redex.len() - 1)) + i] != redex[i] {
-            return false;
-        }
-    }
-    true
-}
-
 /// Rewrites a given sequence of terms with the given rules into a new sequence of rules
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn rewrite(engine: &Engine, rules: &Vector<Rule>, original: Vector<Term>) -> Vector<Term> {
-    let mut list: Vec<_> = original.into_iter().collect();
-    let mut index = list.len() - 1;
-    loop {
-        let mut max_depth = 0;
-        let mut max_reduction = None;
-        for rule in rules {
-            if (rule.redex.len() - 1) >= max_depth && matches(&rule.redex, &list, index) {
-                max_depth = rule.redex.len() - 1;
-                max_reduction = Some(rule.reduction.clone());
+pub fn rewrite(engine: &Engine, rules: &Vector<Rule>, terms: Vector<Term>) -> Vector<Term> {
+    let mut start = 0;
+    while start < terms.len() {
+        let skipped = terms.skip(start);
+        let mut length = skipped.len();
+        while length > 0 {
+            let pattern = &skipped.take(length);
+            for rule in rules {
+                if &rule.redex == pattern {
+                    return rewrite(
+                        engine,
+                        rules,
+                        terms.take(start) + rule.reduction.clone() + skipped.skip(length),
+                    );
+                }
             }
-        }
-        if let Some(reduction) = max_reduction {
-            for _ in 0..=max_depth {
-                list.remove(index - max_depth);
-            }
-            for reduction_term in reduction.into_iter().rev() {
-                list.insert(index - max_depth, reduction_term.clone());
-            }
-            if list.is_empty() {
-                return vector![];
-            }
-            index = list.len() - 1;
-            continue;
-        }
-        match list.get(index) {
-            Some(Term::Prim(Primitive::Unwrap)) if index > 0 => {
-                if let Term::Quote(a) = list[index - 1].clone() {
-                    list.remove(index); // '<'
-                    list.remove(index - 1); // input quote;
-                    for term in a.into_iter().rev() {
-                        list.insert(index - 1, term.clone());
+            if length == 2 {
+                match skipped[1] {
+                    Term::Prim(Primitive::Unwrap) => {
+                        if let Term::Quote(a) = skipped[0].clone() {
+                            return rewrite(
+                                engine,
+                                rules,
+                                terms.take(start) + a + skipped.skip(length),
+                            );
+                        }
                     }
-                    if list.is_empty() {
-                        return vector![];
+                    Term::Prim(Primitive::Wrap) => {
+                        if skipped[0].is_quote() {
+                            let mut new_terms = terms.take(start);
+                            new_terms.push_back(
+                                Term::make_quote(engine, vector![skipped[0].clone()]).clone(),
+                            );
+                            new_terms.append(skipped.skip(length));
+                            return rewrite(engine, rules, new_terms);
+                        }
                     }
-                    index = list.len() - 1;
-                    continue;
-                }
-            }
-            Some(Term::Prim(Primitive::Wrap)) if index > 0 => {
-                if list[index - 1].is_quote() {
-                    list.remove(index); // '>'
-                    list[index - 1] =
-                        Term::make_quote(engine, vector![list[index - 1].clone()]).clone(); // input quote
-                    index = list.len() - 1;
-                    continue;
-                }
-            }
-            Some(Term::Prim(Primitive::Discard)) if index > 0 => {
-                if list[index - 1].is_quote() {
-                    list.remove(index); // '-'
-                    list.remove(index - 1); // term
-                    if list.is_empty() {
-                        return vector![];
+                    Term::Prim(Primitive::Discard) => {
+                        if skipped[0].is_quote() {
+                            let new_terms = terms.take(start) + skipped.skip(length);
+                            return rewrite(engine, rules, new_terms);
+                        }
                     }
-                    index = list.len() - 1;
-                    continue;
-                }
-            }
-            Some(Term::Prim(Primitive::Copy)) if index > 0 => {
-                if list[index - 1].is_quote() {
-                    list[index] = list[index - 1].clone();
-                    index = list.len() - 1;
-                    continue;
-                }
-            }
-            Some(Term::Prim(Primitive::Combine)) if index > 1 => {
-                if let Term::Quote(a) = list[index - 1].clone() {
-                    if let Term::Quote(b) = list[index - 2].clone() {
-                        let mut new_quote = b.clone();
-                        new_quote.extend(a);
-                        list.remove(index); // ','
-                        list.remove(index - 1);
-                        list[index - 2] = Term::make_quote(engine, new_quote).clone();
-                        index = list.len() - 1;
-                        continue;
+                    Term::Prim(Primitive::Copy) => {
+                        if skipped[0].is_quote() {
+                            let mut new_terms = terms.take(start + 1);
+                            new_terms.push_back(skipped[0].clone());
+                            new_terms.append(skipped.skip(length));
+                            return rewrite(engine, rules, new_terms);
+                        }
                     }
+                    _ => {}
                 }
             }
-            Some(Term::Prim(Primitive::Swap)) if index > 1 => {
-                if list[index - 1].is_quote() && list[index - 2].is_quote() {
-                    list.swap(index - 2, index - 1); // two input quotes
-                    list.remove(index); // '~'
-                    index = list.len() - 1;
-                    continue;
+            if length == 3 {
+                match skipped[2] {
+                    Term::Prim(Primitive::Combine) => {
+                        if let Term::Quote(a) = skipped[0].clone() {
+                            if let Term::Quote(b) = skipped[1].clone() {
+                                let mut new_terms = terms.take(start);
+                                new_terms.push_back(Term::make_quote(engine, a + b).clone());
+                                new_terms.append(skipped.skip(length));
+                                return rewrite(engine, rules, new_terms);
+                            }
+                        }
+                    }
+                    Term::Prim(Primitive::Swap) => {
+                        if skipped[0].is_quote() && skipped[1].is_quote() {
+                            let mut new_terms = terms.take(start);
+                            new_terms.push_back(skipped[1].clone());
+                            new_terms.push_back(skipped[0].clone());
+                            new_terms.append(skipped.skip(length));
+                            return rewrite(engine, rules, new_terms);
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
+            length -= 1;
         }
-        if index == 0 {
-            return Vector::from(list);
-        }
-        index -= 1;
+        start += 1;
     }
+    terms
 }
 
 #[cfg(test)]
